@@ -33,8 +33,10 @@ def _parse_event(raw: dict[str, Any]) -> CandidateEvent | None:
 
         price_ranges = raw.get("priceRanges", [])
         price = None
+        min_price = None
         if price_ranges:
             pr = price_ranges[0]
+            min_price = float(pr["min"]) if pr.get("min") is not None else None
             price = f"${pr.get('min', 0):.0f}–${pr.get('max', 0):.0f}"  # noqa: RUF001 — intentional en-dash for display
 
         return CandidateEvent(
@@ -49,6 +51,7 @@ def _parse_event(raw: dict[str, Any]) -> CandidateEvent | None:
             category=category,
             subcategory=subcategory,
             price_range=price,
+            min_price=min_price,
             description=raw.get("info") or raw.get("pleaseNote"),
         )
     except (KeyError, ValueError) as exc:
@@ -57,12 +60,13 @@ def _parse_event(raw: dict[str, Any]) -> CandidateEvent | None:
 
 
 def fetch_ticketmaster_events(
-    settings: Settings, *, days_ahead: int = 14, size: int = 50
+    settings: Settings, *, days_ahead: int = 60, size: int = 100
 ) -> list[CandidateEvent]:
     """Fetch upcoming events near the configured city from the Ticketmaster Discovery API.
 
-    Pulls a 14-day window so the weekly newsletter can include events past Sunday but still
-    soon enough to plan around. The ranking layer filters to the most relevant.
+    Pulls a 60-day window so mainstream concerts with sell-out risk surface 3+ weeks
+    out. The lead-time filter in main.py drops same-week shows and gates expensive
+    events behind a 21-day cutoff; the ranking layer then picks the most relevant.
     """
     now = datetime.now(UTC)
     end = now + timedelta(days=days_ahead)

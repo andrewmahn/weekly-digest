@@ -83,6 +83,9 @@ class CandidateEvent(BaseModel):
     category: str | None = None
     subcategory: str | None = None
     price_range: str | None = None
+    # Numeric floor extracted from the source (Ticketmaster's priceRanges[0].min).
+    # Used to gate mainstream/sell-out-risk shows behind a longer lead time.
+    min_price: float | None = None
     description: str | None = None
 
     @property

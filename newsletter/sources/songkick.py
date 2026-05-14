@@ -42,7 +42,7 @@ def _parse_event(raw: dict[str, Any]) -> CandidateEvent | None:
         return None
 
 
-def fetch_songkick_events(settings: Settings, *, days_ahead: int = 14) -> list[CandidateEvent]:
+def fetch_songkick_events(settings: Settings, *, days_ahead: int = 60) -> list[CandidateEvent]:
     """Fetch upcoming Songkick events for Charlotte metro. No-ops if no API key."""
     # pydantic-settings reads `SONGKICK_API_KEY=` (empty after the equals) as SecretStr(""),
     # not None, so check both. Otherwise we send a request with an empty key and 401.

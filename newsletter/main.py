@@ -105,6 +105,53 @@ def _safe(
         return None
 
 
+# Lead-time thresholds. Same-week shows are too late to plan around comfortably;
+# mainstream/expensive shows ($40+ ticket floor) need 3+ weeks so tickets don't
+# sell out (or balloon on resale) by the time the reader sees the newsletter.
+_MIN_LEAD_DAYS = 7
+_MAINSTREAM_MIN_LEAD_DAYS = 21
+_MAINSTREAM_PRICE_FLOOR = 40.0
+
+
+def _apply_lead_time_filter(
+    events: list[CandidateEvent], *, now: datetime
+) -> list[CandidateEvent]:
+    """Drop events that don't give enough buying lead time.
+
+    - Always drop events <7 days out (the "no same-week concerts" rule).
+    - Additionally drop events <21 days out whose min ticket price is >=$40
+      (these are mainstream shows with sell-out / resale-markup risk).
+    """
+    # Ticketmaster events carry naive (local) datetimes; Songkick carries aware ones.
+    # For days-precision lead time, TZ doesn't matter — strip both to the same frame.
+    now_naive = now.replace(tzinfo=None)
+
+    kept: list[CandidateEvent] = []
+    dropped_same_week = 0
+    dropped_mainstream = 0
+    for event in events:
+        event_start = event.start.replace(tzinfo=None)
+        days_out = (event_start - now_naive).days
+        if days_out < _MIN_LEAD_DAYS:
+            dropped_same_week += 1
+            continue
+        if (
+            event.min_price is not None
+            and event.min_price >= _MAINSTREAM_PRICE_FLOOR
+            and days_out < _MAINSTREAM_MIN_LEAD_DAYS
+        ):
+            dropped_mainstream += 1
+            continue
+        kept.append(event)
+    log.info(
+        "events.lead_time_filtered",
+        kept=len(kept),
+        dropped_same_week=dropped_same_week,
+        dropped_mainstream=dropped_mainstream,
+    )
+    return kept
+
+
 def run_weekly(settings: Settings, *, dry_run: bool, recipients: list[str] | None) -> int:
     """Weekly newsletter run. Returns shell exit code."""
     log.info("weekly.run_start", dry_run=dry_run)
@@ -122,12 +169,12 @@ def run_weekly(settings: Settings, *, dry_run: bool, recipients: list[str] | Non
     )
 
     tm_events: list[CandidateEvent] = (
-        _safe("ticketmaster", errors, fetch_ticketmaster_events, settings, days_ahead=14) or []
+        _safe("ticketmaster", errors, fetch_ticketmaster_events, settings, days_ahead=60) or []
     )
     sk_events: list[CandidateEvent] = (
-        _safe("songkick", errors, fetch_songkick_events, settings, days_ahead=14) or []
+        _safe("songkick", errors, fetch_songkick_events, settings, days_ahead=60) or []
     )
-    candidates = tm_events + sk_events
+    candidates = _apply_lead_time_filter(tm_events + sk_events, now=datetime.now(UTC))
     log.info("weekly.candidates", ticketmaster=len(tm_events), songkick=len(sk_events))
 
     prefs = _load_preferences()
