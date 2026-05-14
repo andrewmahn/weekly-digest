@@ -23,6 +23,9 @@ from newsletter.logging_config import get_logger
 from newsletter.models import (
     CalendarEvent,
     CandidateEvent,
+    DealPick,
+    NewsletterCommentary,
+    PersonalizationResult,
     Preferences,
     RankedEvent,
 )
@@ -125,35 +128,83 @@ def build_profile(
     )
 
 
-# ─── Weekly ranking ─────────────────────────────────────────────────────────────
+# ─── Weekly personalization (unified call) ──────────────────────────────────────
+#
+# One Sonnet 4.6 call (effort: low, thinking: off) that combines:
+#   1. Event ranking with a concrete-signal-or-reject rule.
+#   2. Deal filtering for demographic fit (drop senior/military/kids-only items).
+#   3. Editorial commentary (editor's note + section intros).
+#
+# Earlier versions did only #1. Folding #2 and #3 into the same call adds ~$0.02
+# to the run (~5400 input / 800 output tokens on Sonnet 4.6 with the low/off
+# controls) and eliminates ad-hoc post-hoc filtering scattered across the codebase.
 
 
 class _RankedItem(BaseModel):
     event_id: str
+    # Round-trip the title back so we can detect Claude pairing event_id with the
+    # wrong reason — Ticketmaster IDs are opaque 16-char strings and structured-output
+    # drift sometimes copies an ID from one row but writes a reason about another.
+    event_title: str
     rank: int = Field(ge=1)
-    reason: str = Field(min_length=10, max_length=200)
+    reason: str = Field(min_length=10, max_length=240)
 
 
-class _RankResponse(BaseModel):
-    top_events: list[_RankedItem]
+class _PersonalizationResponse(BaseModel):
+    editor_note: str = Field(default="", max_length=600)
+    picks_intro: str = Field(default="", max_length=400)
+    deals_intro: str = Field(default="", max_length=400)
+    top_events: list[_RankedItem] = Field(default_factory=list)
+    kept_deal_indices: list[int] = Field(default_factory=list)
 
 
-_RANKING_SYSTEM = """You're picking the best 5–8 upcoming events in Charlotte for a couple to consider, based on:
-1. A structured preference profile built from their calendar history.
-2. A list of their most recent attended event titles (concrete grounding).
-3. This week's calendar (so you know which nights they're free).
-4. A list of candidate events (concerts, sports, theater, etc.).
+_PERSONALIZE_SYSTEM = """You're the editor of a couple's weekly newsletter for Charlotte, NC. Each week you produce:
+1. Ranked event picks with personalized reasons.
+2. A filtered list of deals/happy hours.
+3. Brief editorial commentary.
+
+You're given:
+- A preference profile built from their calendar history (genres, cuisines, venues, recent attended titles).
+- This week's calendar (which evenings are free).
+- Candidate upcoming events from Ticketmaster/Songkick.
+- Candidate deals from a Charlotte local-events blog.
+
+## RANKING RULES (strict)
 
 For each pick:
-- Use the EXACT event_id from the candidate list.
-- Write one short "why this for you" sentence (under 200 chars) that ties to a SPECIFIC
-  signal — a genre from the profile, a recent event title, or a free night in their calendar.
-  Vague reasons ("you might like this") are bad. Concrete reasons ("indie show at NoDa,
-  similar to the Big Thief show you went to last month") are good.
-- Rank starting at 1 for the strongest pick.
+- Use the EXACT event_id from the candidate list AND copy ONLY the event's title (the part before " @ ") into the event_title field — do NOT include venue, date, or price. Both fields must come from the SAME row — never mix an event_id from one row with a title or reason from another.
+- Every reason MUST cite a SPECIFIC signal verbatim:
+  • a music genre from the profile (e.g. "indie rock"), OR
+  • a cuisine/venue type from the profile (e.g. "oyster bar", "concert venues"), OR
+  • a specific event title from recent_event_titles.
+- Generic ties are FORBIDDEN. Do NOT write reasons like:
+  "great date night option", "fits your live music preference",
+  "perfect for a free evening", "love of live music events".
+- If you cannot cite a specific signal, do NOT include the pick.
+- Rank starts at 1 for the strongest pick. Return 0–8 picks. Fewer-but-stronger > padded.
 - Skip events that conflict with their calendar.
 - Skip events that contradict their `avoids` list.
-- If fewer than 5 candidates fit, return fewer — don't pad with weak picks."""
+
+## DEAL FILTERING RULES
+
+For each deal in the candidate list (0-indexed), decide keep or drop. Output the INDICES of deals to keep.
+DROP deals that target a demographic this couple is not in:
+  • senior-only / AARP-only / 55+
+  • military / veteran-only discounts
+  • kids-only / family-with-young-children / school-age
+  • student-only discounts
+DROP deals that are clearly mass aggregators or content marketing (not actual deals).
+KEEP deals that plausibly fit a thirty-something couple: happy hours, restaurant specials,
+free local events, festivals, markets, concerts under $30, anything that matches their profile.
+
+## EDITORIAL COMMENTARY RULES
+
+Write three short pieces of editorial copy:
+- editor_note: 2–3 sentences setting the tone for the whole week. Mention the strongest pick by name. Be concrete — not "have a great week!" filler.
+- picks_intro: 1–2 sentences introducing the "Picks for you" section. Reference a specific pattern in the picks (e.g. "Indie rock has the strongest run this week" or "Three Friday-night options if you want to be social").
+- deals_intro: 1–2 sentences introducing the "Happy hours & deals" section. Reference a specific kept deal or theme.
+
+If there are zero ranked picks, picks_intro can be empty. Same for deals_intro."""
 
 
 def _format_candidates(events: list[CandidateEvent]) -> str:
@@ -178,18 +229,33 @@ def _format_calendar(events: list[CalendarEvent]) -> str:
     )
 
 
-def rank_events(
+def _format_deals(deals: list[DealPick]) -> str:
+    if not deals:
+        return "(no deals)"
+    lines = []
+    for idx, d in enumerate(deals):
+        lines.append(f"[{idx}] ({d.deal_type.value}) {d.title}")
+        lines.append(f"    {d.description[:200]}")
+    return "\n".join(lines)
+
+
+def personalize_newsletter(
     candidates: list[CandidateEvent],
+    deals: list[DealPick],
     preferences: Preferences,
     upcoming_calendar: list[CalendarEvent],
     settings: Settings,
     *,
     client: Anthropic | None = None,
-) -> list[RankedEvent]:
-    """Rank candidate events against the cached profile via Claude Sonnet."""
-    if not candidates:
-        log.info("rank.no_candidates")
-        return []
+) -> PersonalizationResult:
+    """Rank events, filter deals, and write editorial commentary in one Sonnet call.
+
+    Returns a PersonalizationResult. If there are no candidates AND no deals, no API
+    call is made and an empty result is returned.
+    """
+    if not candidates and not deals:
+        log.info("personalize.nothing_to_do")
+        return PersonalizationResult()
 
     client = client or Anthropic(api_key=settings.anthropic_api_key.get_secret_value())
 
@@ -205,37 +271,43 @@ def rank_events(
 
 {_format_candidates(candidates)}
 
-Pick the top 5–8 events for this couple. Use exact event_ids from the list above."""
+## Candidate deals ({len(deals)})
+
+{_format_deals(deals)}
+
+Produce ranked picks (concrete signal required), kept-deal indices, and the three pieces of editorial copy."""
 
     log.info(
-        "rank.start",
+        "personalize.start",
         model=settings.claude_ranking_model,
         candidates=len(candidates),
+        deals=len(deals),
         calendar_events=len(upcoming_calendar),
     )
-    # Sonnet 4.6 defaults to effort: "high" + adaptive thinking. For a structured ranking
-    # task (50 candidates → top 5-8 with one-sentence reasons) that's massive overspend —
-    # one default-config call cost ~$0.70-1.50 in the first dry-run. Explicit low effort
-    # and disabled thinking keep this under $0.10/call without measurable quality loss.
+    # Sonnet 4.6 defaults to effort: "high" + adaptive thinking. For this structured task
+    # — rank N candidates with a strict signal rule, output filter indices, write three
+    # short blurbs — high-effort thinking is massive overspend and produced no measurable
+    # quality lift in early dry-runs. Low effort + thinking off keeps the call ~$0.03/run.
     response = client.messages.parse(
         model=settings.claude_ranking_model,
-        max_tokens=2048,
+        max_tokens=3072,
         thinking={"type": "disabled"},
         output_config={"effort": "low"},
-        system=_RANKING_SYSTEM,
+        system=_PERSONALIZE_SYSTEM,
         messages=[{"role": "user", "content": user_content}],
-        output_format=_RankResponse,
+        output_format=_PersonalizationResponse,
     )
     parsed = response.parsed_output
     if parsed is None:
-        raise RuntimeError("Claude ranking returned no parsed output")
+        raise RuntimeError("Claude personalization returned no parsed output")
 
     usage = response.usage
     log.info(
-        "rank.done",
+        "personalize.done",
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         picks=len(parsed.top_events),
+        kept_deals=len(parsed.kept_deal_indices),
     )
 
     candidates_by_id = {c.id: c for c in candidates}
@@ -243,8 +315,40 @@ Pick the top 5–8 events for this couple. Use exact event_ids from the list abo
     for item in sorted(parsed.top_events, key=lambda i: i.rank):
         event = candidates_by_id.get(item.event_id)
         if event is None:
-            log.warning("rank.unknown_event_id", event_id=item.event_id)
+            log.warning("personalize.unknown_event_id", event_id=item.event_id)
+            continue
+        # Cross-check title to catch structured-output drift where Claude pairs an
+        # event_id from one row with a reason about a different event. Use a
+        # prefix-tolerant compare — Claude sometimes appends "@ venue" to the title
+        # despite the prompt, and real drift always involves entirely different acts
+        # whose titles share no leading prefix. Require >=8 chars of overlap to be
+        # specific enough.
+        claimed = " ".join(item.event_title.strip().lower().split())
+        actual = " ".join(event.title.strip().lower().split())
+        shorter, longer = sorted([claimed, actual], key=len)
+        if not (shorter == longer or (len(shorter) >= 8 and longer.startswith(shorter))):
+            log.warning(
+                "personalize.title_mismatch_skipped",
+                event_id=item.event_id,
+                actual_title=event.title,
+                claimed_title=item.event_title,
+            )
             continue
         ranked.append(RankedEvent(event=event, reason=item.reason, rank=item.rank))
 
-    return ranked
+    kept_deals: list[DealPick] = []
+    for idx in parsed.kept_deal_indices:
+        if 0 <= idx < len(deals):
+            kept_deals.append(deals[idx])
+        else:
+            log.warning("personalize.deal_index_out_of_range", index=idx, total=len(deals))
+
+    return PersonalizationResult(
+        ranked_events=ranked,
+        kept_deals=kept_deals,
+        commentary=NewsletterCommentary(
+            editor_note=parsed.editor_note.strip(),
+            picks_intro=parsed.picks_intro.strip(),
+            deals_intro=parsed.deals_intro.strip(),
+        ),
+    )

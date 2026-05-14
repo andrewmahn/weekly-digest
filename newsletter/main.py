@@ -28,11 +28,11 @@ from newsletter.models import (
     CandidateEvent,
     DealPick,
     NewsletterContext,
+    PersonalizationResult,
     Preferences,
-    RankedEvent,
     WeatherForecast,
 )
-from newsletter.personalize import build_profile, rank_events
+from newsletter.personalize import build_profile, personalize_newsletter
 from newsletter.render import render_newsletter, write_to_disk
 from newsletter.send import send_email
 from newsletter.sources.calendar import fetch_calendar_events, fetch_history
@@ -188,16 +188,25 @@ def run_weekly(settings: Settings, *, dry_run: bool, recipients: list[str] | Non
         else:
             prefs = Preferences(built_at=datetime.now(UTC), source_event_count=0)
 
-    ranked: list[RankedEvent] = []
-    if candidates:
-        ranked = (
-            _safe("ranking", errors, rank_events, candidates, prefs, calendar_events, settings)
-            or []
-        )
-
-    deals: list[DealPick] = (
+    raw_deals: list[DealPick] = (
         _safe("deals", errors, fetch_deals, settings, week_start=week_start, week_end=week_end)
         or []
+    )
+
+    # One Sonnet call ranks events, filters deals by demographic fit, and writes the
+    # editor's note + section intros. Skipped if there's nothing to rank or filter.
+    personalization: PersonalizationResult = (
+        _safe(
+            "personalize",
+            errors,
+            personalize_newsletter,
+            candidates,
+            raw_deals,
+            prefs,
+            calendar_events,
+            settings,
+        )
+        or PersonalizationResult()
     )
 
     context = NewsletterContext(
@@ -207,8 +216,9 @@ def run_weekly(settings: Settings, *, dry_run: bool, recipients: list[str] | Non
         city_name=f"{settings.city_name}, {settings.city_state}",
         calendar_events=calendar_events,
         weather=weather,
-        ranked_events=ranked,
-        deals=deals,
+        ranked_events=personalization.ranked_events,
+        deals=personalization.kept_deals,
+        commentary=personalization.commentary,
         section_errors=errors,
     )
 

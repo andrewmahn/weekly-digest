@@ -43,6 +43,8 @@
   .deal a { color: #8b6f47; text-decoration: none; }
   .deal a:hover { text-decoration: underline; }
   .error-note { font-size: 12px; color: #888; font-style: italic; padding: 8px 0; }
+  .editor-note { padding: 20px 32px 8px; font-size: 15px; color: #5a4a3a; font-style: italic; line-height: 1.55; border-bottom: 1px solid #f0ece2; }
+  .section-intro { font-size: 14px; color: #5a4a3a; font-style: italic; margin: 0 0 16px; line-height: 1.5; }
   .footer { padding: 16px 32px; background: #f9f7f0; font-size: 11px; color: #999; text-align: center; }
   .footer a { color: #888; text-decoration: none; }
 
@@ -82,6 +84,10 @@
     <h1>Weekly Digest</h1>
     <p class="date">{{ week_start.strftime('%B %d') }} – {{ week_end.strftime('%B %d, %Y') }} · {{ city_name }}</p>
   </div>
+
+  {% if commentary and commentary.editor_note %}
+    <div class="editor-note">{{ commentary.editor_note }}</div>
+  {% endif %}
 
   {# ─── This week ─────────────────────────────────────────────── #}
   <div class="section">
@@ -131,6 +137,9 @@
   {# ─── Recommendations ──────────────────────────────────────── #}
   <div class="section">
     <h2>Picked for you</h2>
+    {% if commentary and commentary.picks_intro and ranked_events %}
+      <p class="section-intro">{{ commentary.picks_intro }}</p>
+    {% endif %}
     {% if ranked_events %}
       {% for ranked in ranked_events %}
         <div class="event-pick">
@@ -155,6 +164,9 @@
   {% if deals %}
     <div class="section">
       <h2>Happy hours &amp; deals</h2>
+      {% if commentary and commentary.deals_intro %}
+        <p class="section-intro">{{ commentary.deals_intro }}</p>
+      {% endif %}
       {% for deal in deals %}
         <div class="deal">
           <span class="badge {% if deal.deal_type.value == 'free_event' %}badge-free{% endif %}">

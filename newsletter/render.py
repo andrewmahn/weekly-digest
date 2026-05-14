@@ -38,6 +38,7 @@ def render_newsletter(context: NewsletterContext) -> str:
         weather=context.weather,
         ranked_events=context.ranked_events,
         deals=context.deals,
+        commentary=context.commentary,
         section_errors=context.section_errors,
     )
 

@@ -132,6 +132,22 @@ class Preferences(BaseModel):
     source_event_count: int
 
 
+class NewsletterCommentary(BaseModel):
+    """Short editorial blurbs written by Claude during the weekly personalization call."""
+
+    editor_note: str = ""
+    picks_intro: str = ""
+    deals_intro: str = ""
+
+
+class PersonalizationResult(BaseModel):
+    """Everything the unified personalization call returns."""
+
+    ranked_events: list[RankedEvent] = Field(default_factory=list)
+    kept_deals: list[DealPick] = Field(default_factory=list)
+    commentary: NewsletterCommentary = Field(default_factory=NewsletterCommentary)
+
+
 class NewsletterContext(BaseModel):
     """Everything passed to the Jinja2 template."""
 
@@ -143,6 +159,7 @@ class NewsletterContext(BaseModel):
     weather: WeatherForecast | None
     ranked_events: list[RankedEvent]
     deals: list[DealPick] = Field(default_factory=list)
+    commentary: NewsletterCommentary = Field(default_factory=NewsletterCommentary)
     section_errors: dict[str, str] = Field(default_factory=dict)
 
     def model_dump_for_template(self) -> dict[str, Any]:
