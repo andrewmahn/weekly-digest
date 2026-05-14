@@ -1,0 +1,91 @@
+name: Weekly newsletter
+
+on:
+  schedule:
+    # 11:07 UTC Sundays → 7:07am EDT (Mar–Nov) / 6:07am EST (Nov–Mar).
+    # Off-hour minute avoids the top-of-hour scheduler stampede.
+    - cron: "7 11 * * 0"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Render to disk without sending"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+      GOOGLE_CALENDAR_IDS: ${{ secrets.GOOGLE_CALENDAR_IDS }}
+      TICKETMASTER_API_KEY: ${{ secrets.TICKETMASTER_API_KEY }}
+      SONGKICK_API_KEY: ${{ secrets.SONGKICK_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      NEWSLETTER_FROM_EMAIL: ${{ secrets.NEWSLETTER_FROM_EMAIL }}
+      NEWSLETTER_TO_EMAILS: ${{ secrets.NEWSLETTER_TO_EMAILS }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Restore preferences cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data/preferences.json
+          # Try the current month's profile first, then fall back to any prior profile.
+          # If both miss, main.py builds the profile inline (cold-start fallback).
+          key: preferences-v1-${{ github.run_id }}
+          restore-keys: |
+            preferences-v1-
+
+      - name: Build and send newsletter
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            uv run python -m newsletter.main --weekly --dry-run
+          else
+            uv run python -m newsletter.main --weekly
+          fi
+
+      - name: Upload rendered HTML artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: newsletter-html-${{ github.run_id }}
+          path: out/*.html
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          FROM_EMAIL: ${{ secrets.NEWSLETTER_FROM_EMAIL }}
+          TO_EMAIL: ${{ secrets.FAILURE_NOTIFY_EMAIL || secrets.NEWSLETTER_FROM_EMAIL }}
+        run: |
+          curl -sS -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"from\": \"$FROM_EMAIL\",
+              \"to\": [\"$TO_EMAIL\"],
+              \"subject\": \"⚠️ Weekly newsletter run failed\",
+              \"html\": \"<p>The weekly newsletter run failed. <a href='https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'>View the run</a>.</p>\"
+            }"

@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# uv
+.uv-cache/
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Type checking
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Project-specific — see plan: preferences.json is PII-rich, never commit
+data/
+out/
+*.html.local
+.env
+.env.local
+
+# Conversation handoff file — local-only working notes when picking up a
+# Claude Code session in this directory. Not for the public repo.
+HANDOFF.md
+
+# OAuth artifacts — these contain refresh tokens
+token.json
+credentials.json
+client_secret*.json
+
+# Claude Code local state
+.claude/settings.local.json
+.claude/scheduled_tasks.lock

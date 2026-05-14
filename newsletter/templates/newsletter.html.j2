@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Weekly Digest — {{ week_start.strftime('%B %d') }}</title>
+<style>
+  body { margin: 0; padding: 0; background-color: #f4f1ea; font-family: Georgia, 'Times New Roman', serif; color: #2a2a2a; -webkit-text-size-adjust: 100%; }
+  .wrap { width: 100%; padding: 24px 12px; }
+  .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  .header { padding: 32px 32px 16px; border-bottom: 1px solid #e8e4d8; }
+  .header h1 { margin: 0; font-size: 28px; font-weight: normal; color: #1a1a1a; letter-spacing: -0.5px; }
+  .header .date { margin: 4px 0 0; font-size: 14px; color: #888; font-style: italic; }
+  .section { padding: 24px 32px; border-bottom: 1px solid #f0ece2; }
+  .section:last-child { border-bottom: none; }
+  .section h2 { margin: 0 0 16px; font-size: 18px; font-weight: normal; color: #5a4a3a; text-transform: uppercase; letter-spacing: 1.5px; }
+  .cal-event { margin: 0 0 12px; padding-left: 12px; border-left: 2px solid #c9a87c; }
+  .cal-event .when { font-size: 13px; color: #888; margin: 0; }
+  .cal-event .title { font-size: 15px; color: #2a2a2a; margin: 2px 0 0; font-weight: 600; }
+  .cal-event .where { font-size: 13px; color: #666; margin: 2px 0 0; font-style: italic; }
+  .weather-grid { width: 100%; border-collapse: collapse; }
+  .weather-day { padding: 8px 4px; text-align: center; vertical-align: top; }
+  .weather-day .dow { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+  .weather-day .high { font-size: 20px; color: #2a2a2a; font-weight: 600; margin-top: 4px; }
+  .weather-day .low { font-size: 14px; color: #888; }
+  .weather-day .cond { font-size: 11px; color: #666; margin-top: 2px; }
+  .event-pick { padding: 16px 0; border-bottom: 1px dotted #e8e4d8; }
+  .event-pick:last-child { border-bottom: none; }
+  .event-pick .rank { display: inline-block; width: 24px; height: 24px; line-height: 24px; text-align: center; background: #c9a87c; color: #fff; border-radius: 50%; font-size: 13px; font-weight: bold; font-family: Helvetica, Arial, sans-serif; margin-right: 8px; vertical-align: middle; }
+  .event-pick .title { display: inline; font-size: 16px; color: #1a1a1a; font-weight: 600; }
+  .event-pick .meta { font-size: 13px; color: #666; margin: 4px 0 0 32px; }
+  .event-pick .reason { font-size: 14px; color: #5a4a3a; margin: 8px 0 0 32px; font-style: italic; line-height: 1.5; }
+  .event-pick a { color: #8b6f47; text-decoration: none; }
+  .event-pick a:hover { text-decoration: underline; }
+  .deal { padding: 16px 0; border-bottom: 1px dotted #e8e4d8; }
+  .deal:last-child { border-bottom: none; }
+  .deal .badge { display: inline-block; padding: 2px 8px; background: #c9a87c; color: #fff; border-radius: 3px; font-size: 10px; font-weight: bold; font-family: Helvetica, Arial, sans-serif; letter-spacing: 0.5px; text-transform: uppercase; vertical-align: middle; margin-right: 6px; }
+  .deal .badge-free { background: #6b8e5a; }
+  .deal .title { display: inline; font-size: 16px; color: #1a1a1a; font-weight: 600; }
+  .deal .meta { font-size: 13px; color: #666; margin: 6px 0 0; }
+  .deal .description { font-size: 14px; color: #5a4a3a; margin: 6px 0 0; line-height: 1.5; }
+  .deal .source { font-size: 11px; color: #888; margin: 6px 0 0; font-family: Helvetica, Arial, sans-serif; }
+  .deal a { color: #8b6f47; text-decoration: none; }
+  .deal a:hover { text-decoration: underline; }
+  .error-note { font-size: 12px; color: #888; font-style: italic; padding: 8px 0; }
+  .footer { padding: 16px 32px; background: #f9f7f0; font-size: 11px; color: #999; text-align: center; }
+  .footer a { color: #888; text-decoration: none; }
+
+  @media (prefers-color-scheme: dark) {
+    body { background-color: #1a1a1a; color: #e8e4d8; }
+    .container { background-color: #2a2a2a; }
+    .header { border-bottom-color: #3a3a3a; }
+    .header h1 { color: #f0ece2; }
+    .header .date { color: #999; }
+    .section { border-bottom-color: #3a3a3a; }
+    .section h2 { color: #c9a87c; }
+    .cal-event .title, .event-pick .title, .deal .title { color: #f0ece2; }
+    .cal-event .when, .cal-event .where, .weather-day .dow, .weather-day .low, .weather-day .cond, .event-pick .meta, .deal .meta, .deal .source { color: #aaa; }
+    .weather-day .high { color: #f0ece2; }
+    .event-pick, .deal { border-bottom-color: #3a3a3a; }
+    .event-pick .reason, .deal .description { color: #d4c4a8; }
+    .footer { background: #1f1f1f; color: #888; }
+  }
+
+  @media only screen and (max-width: 480px) {
+    .wrap { padding: 8px 0; }
+    .container { border-radius: 0; }
+    .header { padding: 20px 20px 12px; }
+    .header h1 { font-size: 22px; }
+    .section { padding: 16px 20px; }
+    .weather-day { padding: 6px 2px; }
+    .weather-day .high { font-size: 16px; }
+    .event-pick .meta, .event-pick .reason { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="container">
+
+  <div class="header">
+    <h1>Weekly Digest</h1>
+    <p class="date">{{ week_start.strftime('%B %d') }} – {{ week_end.strftime('%B %d, %Y') }} · {{ city_name }}</p>
+  </div>
+
+  {# ─── This week ─────────────────────────────────────────────── #}
+  <div class="section">
+    <h2>This week</h2>
+    {% if calendar_events %}
+      {% for event in calendar_events %}
+        <div class="cal-event">
+          <p class="when">{{ event.day_of_week }} · {{ event.time_range }}</p>
+          <p class="title">{{ event.title }}</p>
+          {% if event.location %}<p class="where">{{ event.location }}</p>{% endif %}
+        </div>
+      {% endfor %}
+    {% elif 'calendar' in section_errors %}
+      <p class="error-note">Couldn't pull calendar this week — check {{ section_errors['calendar'] }}.</p>
+    {% else %}
+      <p class="error-note">Nothing on the calendar — wide open week.</p>
+    {% endif %}
+  </div>
+
+  {# ─── Weather ───────────────────────────────────────────────── #}
+  {% if weather %}
+    <div class="section">
+      <h2>Weather</h2>
+      <table class="weather-grid" role="presentation" cellpadding="0" cellspacing="0">
+        <tr>
+          {% for day in weather.days %}
+            <td class="weather-day">
+              <div class="dow">{{ day.day_of_week[:3] }}</div>
+              <div class="high">{{ day.high_f|round|int }}°</div>
+              <div class="low">{{ day.low_f|round|int }}°</div>
+              <div class="cond">{{ day.condition }}</div>
+              {% if day.precipitation_chance >= 30 %}
+                <div class="cond">💧 {{ day.precipitation_chance|round|int }}%</div>
+              {% endif %}
+            </td>
+          {% endfor %}
+        </tr>
+      </table>
+    </div>
+  {% elif 'weather' in section_errors %}
+    <div class="section">
+      <h2>Weather</h2>
+      <p class="error-note">Weather data unavailable this week.</p>
+    </div>
+  {% endif %}
+
+  {# ─── Recommendations ──────────────────────────────────────── #}
+  <div class="section">
+    <h2>Picked for you</h2>
+    {% if ranked_events %}
+      {% for ranked in ranked_events %}
+        <div class="event-pick">
+          <span class="rank">{{ ranked.rank }}</span>
+          <span class="title"><a href="{{ ranked.event.url }}">{{ ranked.event.title }}</a></span>
+          <div class="meta">
+            {{ ranked.event.short_when }}
+            {% if ranked.event.venue %} · {{ ranked.event.venue }}{% endif %}
+            {% if ranked.event.price_range %} · {{ ranked.event.price_range }}{% endif %}
+          </div>
+          <div class="reason">{{ ranked.reason }}</div>
+        </div>
+      {% endfor %}
+    {% elif 'ranking' in section_errors %}
+      <p class="error-note">Personalized recommendations unavailable — try again next week.</p>
+    {% else %}
+      <p class="error-note">No events match this week. Try checking Ticketmaster directly.</p>
+    {% endif %}
+  </div>
+
+  {# ─── Happy hours & deals ──────────────────────────────────── #}
+  {% if deals %}
+    <div class="section">
+      <h2>Happy hours &amp; deals</h2>
+      {% for deal in deals %}
+        <div class="deal">
+          <span class="badge {% if deal.deal_type.value == 'free_event' %}badge-free{% endif %}">
+            {% if deal.deal_type.value == 'happy_hour' %}Happy Hour
+            {%- elif deal.deal_type.value == 'restaurant_special' %}Restaurant
+            {%- elif deal.deal_type.value == 'free_event' %}Free
+            {%- else %}Deal{% endif %}
+          </span>
+          <span class="title">{{ deal.title }}</span>
+          <div class="meta">
+            {% if deal.venue %}{{ deal.venue }}{% endif %}
+            {% if deal.neighborhood %} · {{ deal.neighborhood }}{% endif %}
+            {% if deal.when %} · {{ deal.when }}{% endif %}
+          </div>
+          <div class="description">{{ deal.description }}</div>
+          <div class="source"><a href="{{ deal.source_url }}">source ↗</a></div>
+        </div>
+      {% endfor %}
+    </div>
+  {% elif 'deals' in section_errors %}
+    <div class="section">
+      <h2>Happy hours &amp; deals</h2>
+      <p class="error-note">Deals research came up empty this week.</p>
+    </div>
+  {% endif %}
+
+  <div class="footer">
+    Generated {{ generated_at.strftime('%a %b %d, %Y at %I:%M %p UTC') }} ·
+    <a href="https://github.com/andrewmahn/weekly-digest">weekly-digest</a>
+  </div>
+
+</div>
+</div>
+</body>
+</html>
