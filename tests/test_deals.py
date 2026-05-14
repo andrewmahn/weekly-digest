@@ -23,8 +23,14 @@ def _item(
     pub_date: str = "Wed, 13 May 2026 20:00:00 +0000",
     description: str = "<p>Details about the event with venue address and timing.</p>",
     categories: tuple[str, ...] = (),
+    content_encoded: str | None = None,
 ) -> str:
     cats = "".join(f"<category><![CDATA[{c}]]></category>" for c in categories)
+    encoded = (
+        f"<content:encoded><![CDATA[{content_encoded}]]></content:encoded>"
+        if content_encoded is not None
+        else ""
+    )
     return (
         "<item>"
         f"<title>{title}</title>"
@@ -32,6 +38,7 @@ def _item(
         f"<pubDate>{pub_date}</pubDate>"
         f"{cats}"
         f"<description><![CDATA[{description}]]></description>"
+        f"{encoded}"
         "</item>"
     )
 
@@ -40,7 +47,7 @@ def _feed(items: list[str]) -> str:
     body = "".join(items)
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
-        '<rss version="2.0"><channel>'
+        '<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel>'
         "<title>Charlotte On The Cheap</title>"
         f"{body}"
         "</channel></rss>"
@@ -151,6 +158,40 @@ def test_fetch_deals_respects_max_picks(settings: Settings) -> None:
     )
 
     assert len(picks) == 5
+
+
+@respx.mock
+def test_fetch_deals_extracts_image_from_content_encoded(settings: Settings) -> None:
+    feed = _feed(
+        [
+            _item(
+                title="Pineville WorldFest May 30",
+                link="https://charlotteonthecheap.com/pineville-world-fest/",
+                content_encoded=(
+                    '<figure class="wp-block-image"><img fetchpriority="high" '
+                    'width="616" height="514" '
+                    'src="https://www.charlotteonthecheap.com/uploads/pineville.jpg" '
+                    'alt=""/></figure>'
+                    "<p>Free multicultural festival May 30 at Pineville Lake Park.</p>"
+                ),
+            ),
+            _item(
+                title="No-image deal post",
+                link="https://charlotteonthecheap.com/no-image/",
+                content_encoded="<p>Plain post body with no embedded image.</p>",
+            ),
+        ]
+    )
+    respx.get(FEED_URL).mock(return_value=httpx.Response(200, content=feed))
+
+    picks = fetch_deals(settings, week_start=date(2026, 5, 17), week_end=date(2026, 5, 23))
+
+    assert len(picks) == 2
+    assert (
+        str(picks[0].image_url)
+        == "https://www.charlotteonthecheap.com/uploads/pineville.jpg"
+    )
+    assert picks[1].image_url is None
 
 
 @respx.mock

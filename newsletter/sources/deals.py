@@ -45,6 +45,12 @@ _FREE_RE = re.compile(r"\bfree\b", re.I)
 
 _WP_FOOTER_RE = re.compile(r"\s*The post .+? appeared first on .+$", re.S)
 
+# WordPress feeds put plain-text excerpts in <description> and the full post body
+# (with embedded <img> tags) in <content:encoded>. We pull the first image src out
+# of content:encoded for the hero/thumbnail in the rendered newsletter.
+_CONTENT_ENCODED_TAG = "{http://purl.org/rss/1.0/modules/content/}encoded"
+_IMG_SRC_RE = re.compile(r'<img[^>]+\bsrc="([^"]+)"', re.I)
+
 
 class _TextExtractor(HTMLParser):
     """Collapse an HTML fragment to plain text without pulling in BeautifulSoup."""
@@ -87,6 +93,14 @@ def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "…"
+
+
+def _extract_image(item: ET.Element) -> str | None:
+    encoded = item.findtext(_CONTENT_ENCODED_TAG)
+    if not encoded:
+        return None
+    match = _IMG_SRC_RE.search(encoded)
+    return match.group(1) if match else None
 
 
 def fetch_deals(
@@ -141,6 +155,7 @@ def fetch_deals(
             continue
 
         categories = [c.text.strip() for c in item.findall("category") if c.text]
+        image_src = _extract_image(item)
 
         try:
             picks.append(
@@ -149,6 +164,7 @@ def fetch_deals(
                     description=_truncate(description, 400),
                     deal_type=_classify(title, categories),
                     source_url=HttpUrl(link),
+                    image_url=HttpUrl(image_src) if image_src else None,
                 )
             )
         except ValidationError as exc:

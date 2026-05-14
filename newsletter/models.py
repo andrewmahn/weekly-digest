@@ -115,6 +115,7 @@ class DealPick(BaseModel):
         description="Human-readable timing, e.g. 'Tuesdays 5-7pm' or 'Sunday, May 18'.",
     )
     source_url: HttpUrl
+    image_url: HttpUrl | None = None
 
 
 class Preferences(BaseModel):

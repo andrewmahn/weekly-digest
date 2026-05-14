@@ -91,6 +91,7 @@ def sample_candidates() -> list[CandidateEvent]:
             start=datetime(2026, 5, 20, 20, 0),
             venue="The Fillmore Charlotte",
             url="https://www.ticketmaster.com/event/tm1",
+            image_url="https://s1.ticketm.net/dam/a/big-thief.jpg",
             category="Music",
             subcategory="Indie Folk",
             price_range="$45–$85",  # noqa: RUF001 — intentional en-dash for display
@@ -102,6 +103,7 @@ def sample_candidates() -> list[CandidateEvent]:
             start=datetime(2026, 5, 21, 19, 30),
             venue="Spectrum Center",
             url="https://www.ticketmaster.com/event/tm2",
+            image_url="https://s1.ticketm.net/dam/a/hornets.jpg",
             category="Sports",
         ),
     ]
@@ -142,6 +144,7 @@ def sample_deals() -> list[DealPick]:
             deal_type=DealType.HAPPY_HOUR,
             when="Tuesdays 5–7pm",  # noqa: RUF001 — intentional en-dash for display
             source_url="https://example.com/stanley-happy-hour",
+            image_url="https://example.com/img/stanley.jpg",
         ),
         DealPick(
             title="Free outdoor movie: The Princess Bride",
@@ -151,6 +154,7 @@ def sample_deals() -> list[DealPick]:
             deal_type=DealType.FREE_EVENT,
             when="Friday, May 22, 8pm",
             source_url="https://example.com/uptown-movie-night",
+            image_url=None,
         ),
     ]
 
