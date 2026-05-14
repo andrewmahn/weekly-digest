@@ -28,7 +28,6 @@ class Settings(BaseSettings):
     anthropic_api_key: SecretStr
     claude_profile_model: str = "claude-haiku-4-5"
     claude_ranking_model: str = "claude-sonnet-4-6"
-    claude_deals_model: str = "claude-sonnet-4-6"
 
     resend_api_key: SecretStr
     newsletter_from_email: EmailStr

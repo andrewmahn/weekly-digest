@@ -1,68 +1,92 @@
-"""Deals source — Claude with the web_search server-side tool.
+"""Deals source — scrape Charlotte On The Cheap's RSS feed.
 
-There is no clean public API for "happy hours and restaurant deals in Charlotte" — the
-ecosystem is a patchwork of restaurant websites, local-news blog posts, and Instagram. So
-this source delegates discovery to Claude with the web_search tool enabled. Once a week
-Claude searches for current Charlotte happy hours / specials / cheap events, filters out
-stale or off-topic results, and returns a structured list of picks with source URLs for
-attribution.
+charlotteonthecheap.com curates Charlotte-area free events, restaurant deals, and
+happy hours and exposes its full posting stream as a WordPress RSS feed at /feed/.
+Each item carries title, link, pubDate, categories, and an HTML description — enough
+to surface as a DealPick without any LLM call. Saves the per-run Sonnet + web_search
+spend (~$0.15-0.35/run, the dominant Anthropic line item).
 
-Why this is OK to run weekly:
-- One server-side search call, ~$0.01 per run.
-- 5-min / 1-hour cache TTL doesn't survive the 7-day gap between newsletter runs, so we
-  skip prompt caching.
-- A failed deals call is non-fatal — `_safe` in main.py records the error and the
-  newsletter ships without the deals section.
+The feed returns the 100 most-recent posts. We filter to items published within the
+two-week window leading up to week_start (older posts overwhelmingly cover past events),
+drop aggregator round-ups, strip WordPress boilerplate from the description, and cap
+the list at 8 picks to mirror the prior prompt's quality-over-quantity intent.
 """
 
 from __future__ import annotations
 
-from datetime import date
-from typing import Any
+import re
+from datetime import UTC, date, datetime, timedelta
+from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
+from xml.etree import ElementTree as ET
 
-from anthropic import Anthropic
-from anthropic.types import MessageParam
-from pydantic import BaseModel, Field
+import httpx
+from pydantic import HttpUrl, ValidationError
 
 from newsletter.config import Settings
 from newsletter.logging_config import get_logger
-from newsletter.models import DealPick
+from newsletter.models import DealPick, DealType
 
 log = get_logger(__name__)
 
-# The 20260209 web_search version (with dynamic filtering) isn't yet in the SDK's
-# narrowly-typed ToolParam union, so we annotate as Any to avoid a list-item type error.
-_WEB_SEARCH_TOOL: Any = {"type": "web_search_20260209", "name": "web_search"}
+FEED_URL = "https://charlotteonthecheap.com/feed/"
+_USER_AGENT = "weekly-digest/0.1 (+https://github.com/andrewmahn/weekly-digest)"
 
-_DEALS_SYSTEM = """You research happy hours, restaurant deals, and free/cheap local events \
-for a couple's weekly newsletter in Charlotte, NC.
+# Aggregator/round-up posts ("Free and cheap things to do in Charlotte this week",
+# "Best of summer") are summaries that link to the same items we'll pull individually —
+# skip them so the deals section doesn't double-count.
+_AGGREGATOR_PATTERNS = (
+    re.compile(r"free and cheap things to do", re.I),
+    re.compile(r"\bbest of\b", re.I),
+)
 
-Use the web_search tool to find CURRENT information. Search the open web, prioritizing:
-- Restaurant happy hours (e.g. "Tuesdays 5-7pm half-price oysters at The Stanley")
-- Prix fixe or restaurant-week-style specials
-- Free or cheap (<$20) local events: outdoor movies, gallery crawls, festivals, markets
+_HAPPY_HOUR_RE = re.compile(r"happy hour|half[- ]?price|prix fixe|\$\d+\s*off", re.I)
+_FREE_RE = re.compile(r"\bfree\b", re.I)
 
-Strict requirements for every pick:
-1. Charlotte, NC specifically — not Charlottesville VA, not Port Charlotte FL, not any other city.
-2. Active in the coming 7 days from the date in the user message. Be skeptical of any page that mentions a past year's event or appears outdated — skip it.
-3. Each pick MUST include a specific venue name. "Various restaurants" is not acceptable.
-4. Each pick MUST include a real source URL Claude actually retrieved (no fabricated links).
-
-Output 3-8 picks. Quality over quantity — three solid happy hours is better than eight \
-vague specials. If you cannot find enough current information after a few searches, return \
-fewer picks rather than padding with low-confidence items."""
+_WP_FOOTER_RE = re.compile(r"\s*The post .+? appeared first on .+$", re.S)
 
 
-_DEALS_USER_TEMPLATE = """The newsletter covers {week_start} through {week_end}.
+class _TextExtractor(HTMLParser):
+    """Collapse an HTML fragment to plain text without pulling in BeautifulSoup."""
 
-Find 3-8 current happy hours, restaurant deals, or cheap/free local events in Charlotte \
-for this week. For each pick, include the venue, neighborhood (if known), a short \
-description, the timing in plain language (e.g. "Tuesdays 5-7pm"), the deal type, and \
-the source URL where you found it."""
+    def __init__(self) -> None:
+        super().__init__()
+        self._parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self._parts.append(data)
+
+    @property
+    def text(self) -> str:
+        return "".join(self._parts)
 
 
-class _DealsResponse(BaseModel):
-    deals: list[DealPick] = Field(default_factory=list, max_length=8)
+def _strip_html(html: str) -> str:
+    parser = _TextExtractor()
+    parser.feed(html)
+    text = _WP_FOOTER_RE.sub("", parser.text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _classify(title: str, categories: list[str]) -> DealType:
+    cat_set = {c.lower() for c in categories}
+    if _HAPPY_HOUR_RE.search(title):
+        return DealType.HAPPY_HOUR
+    if "food and drink" in cat_set:
+        return DealType.RESTAURANT_SPECIAL
+    if _FREE_RE.search(title):
+        return DealType.FREE_EVENT
+    return DealType.DISCOUNTED_EVENT
+
+
+def _is_aggregator(title: str) -> bool:
+    return any(p.search(title) for p in _AGGREGATOR_PATTERNS)
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
 
 
 def fetch_deals(
@@ -70,60 +94,70 @@ def fetch_deals(
     *,
     week_start: date,
     week_end: date,
-    client: Anthropic | None = None,
+    feed_url: str = FEED_URL,
+    max_picks: int = 8,
 ) -> list[DealPick]:
-    """Ask Claude (with web_search) for current Charlotte happy hours and deals."""
-    client = client or Anthropic(api_key=settings.anthropic_api_key.get_secret_value())
-
+    """Pull current happy hours, restaurant specials, and free events from the COTC feed."""
     log.info(
         "deals.fetch_start",
-        model=settings.claude_deals_model,
+        feed=feed_url,
         week_start=str(week_start),
         week_end=str(week_end),
     )
 
-    user_content = _DEALS_USER_TEMPLATE.format(week_start=week_start, week_end=week_end)
-    messages: list[MessageParam] = [{"role": "user", "content": user_content}]
+    headers = {
+        "User-Agent": _USER_AGENT,
+        "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.5",
+    }
+    response = httpx.get(feed_url, headers=headers, timeout=30.0, follow_redirects=True)
+    response.raise_for_status()
 
-    # Server-side web_search runs up to 10 iterations before returning `pause_turn`.
-    # For find-3-8-deals work, one round trip is the norm. Allow a single continuation
-    # so the agent can finish if it happens to hit the cap.
-    # Sonnet 4.6 defaults to effort: "high" + adaptive thinking. Combined with web_search's
-    # server-side agentic loop (up to 10 iterations), default config can cost $2+/call —
-    # thinking fires *between every search iteration* and tokens compound. Explicit low
-    # effort + disabled thinking keeps the model focused on tool calls, not reasoning,
-    # which is what we want here: search, evaluate freshness, return structured output.
-    response = None
-    for attempt in range(2):
-        response = client.messages.parse(
-            model=settings.claude_deals_model,
-            max_tokens=4096,
-            thinking={"type": "disabled"},
-            output_config={"effort": "low"},
-            tools=[_WEB_SEARCH_TOOL],
-            system=_DEALS_SYSTEM,
-            messages=messages,
-            output_format=_DealsResponse,
-        )
-        if response.stop_reason != "pause_turn":
-            break
-        log.info("deals.pause_turn_resume", attempt=attempt + 1)
-        messages = [
-            {"role": "user", "content": user_content},
-            {"role": "assistant", "content": response.content},
-        ]
-    assert response is not None
-
-    parsed = response.parsed_output
-    if parsed is None:
-        log.warning("deals.no_parsed_output", stop_reason=response.stop_reason)
+    root = ET.fromstring(response.content)
+    channel = root.find("channel")
+    if channel is None:
+        log.warning("deals.no_channel")
         return []
 
-    usage = response.usage
-    log.info(
-        "deals.fetch_done",
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        picks=len(parsed.deals),
-    )
-    return parsed.deals
+    cutoff = datetime.combine(week_start, datetime.min.time(), UTC) - timedelta(days=14)
+
+    picks: list[DealPick] = []
+    skipped = 0
+    for item in channel.iterfind("item"):
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        if not title or not link or _is_aggregator(title):
+            continue
+
+        pub_raw = (item.findtext("pubDate") or "").strip()
+        try:
+            published = parsedate_to_datetime(pub_raw)
+        except (TypeError, ValueError):
+            continue
+        if published < cutoff:
+            continue
+
+        description = _strip_html(item.findtext("description") or "")
+        if len(description) < 10:
+            continue
+
+        categories = [c.text.strip() for c in item.findall("category") if c.text]
+
+        try:
+            picks.append(
+                DealPick(
+                    title=_truncate(title, 120),
+                    description=_truncate(description, 400),
+                    deal_type=_classify(title, categories),
+                    source_url=HttpUrl(link),
+                )
+            )
+        except ValidationError as exc:
+            skipped += 1
+            log.debug("deals.skip_invalid", title=title, error=str(exc))
+            continue
+
+        if len(picks) >= max_picks:
+            break
+
+    log.info("deals.fetch_done", picks=len(picks), skipped=skipped)
+    return picks

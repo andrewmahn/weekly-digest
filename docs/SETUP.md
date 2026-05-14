@@ -71,9 +71,9 @@ This is the most involved step. **Plan ~15 minutes.**
 
 ## 4. Happy hours & deals (no extra setup)
 
-The "happy hours & deals" section uses Claude's server-side `web_search` tool, which is part of the Anthropic API you set up in section 6 below. **No separate provider account or API key.** Cost is roughly $0.01 per weekly run.
+The "happy hours & deals" section scrapes [charlotteonthecheap.com](https://charlotteonthecheap.com/)'s WordPress RSS feed at `/feed/`. **No provider account, no API key, no cost.**
 
-A previous version of this project used Yelp Fusion for a "restaurant of the week" pick. Yelp has gated new Fusion access since 2024 and the `special_hours` field is rarely populated anyway, so we replaced it with a Claude-driven web search that returns current happy hours, restaurant specials, and free/cheap local events with source URLs for attribution. See `docs/ARCHITECTURE.md` → "Deals via Claude web_search" for the reasoning.
+Earlier versions of this project used Yelp Fusion (`special_hours` rarely populated, gated since 2024) and then Claude with the server-side `web_search` tool (flexible but ~$0.15–0.35/run, the dominant Anthropic line item). Both were replaced once it became clear that charlotteonthecheap.com already curates the exact content we want — Charlotte happy hours, restaurant specials, free events — and exposes it as a stable WordPress feed. See `docs/ARCHITECTURE.md` → "Deals via charlotteonthecheap.com RSS" for the reasoning.
 
 ## 5. Songkick (optional)
 
@@ -167,7 +167,7 @@ After rotating, trigger `weekly-newsletter.yml` manually via workflow_dispatch t
 - Your refresh token has expired. Most common cause: the OAuth consent screen is still in Testing mode (7-day expiry). Publish to Production and re-run `scripts/generate_calendar_token.py`.
 
 **Deals section is empty week after week.**
-- Claude's `web_search` may legitimately fail to find current happy-hour info for a given week — Charlotte coverage on the open web varies. Check the workflow logs for `deals.fetch_done` with `picks=0`. If it's persistent (3+ weeks in a row), consider widening the prompt in `newsletter/sources/deals.py` or pinning `CLAUDE_DEALS_MODEL` to a stronger model.
+- charlotteonthecheap.com may have published nothing recent that matches our two-week window. Check the workflow logs for `deals.fetch_done` with `picks=0`. If it's persistent (3+ weeks in a row), open the feed at https://charlotteonthecheap.com/feed/ directly — if the feed itself is sparse or returning an error, the site has changed and `newsletter/sources/deals.py` needs adjustment.
 
 **Claude API returns 400 for an unknown model.**
 - Update `CLAUDE_PROFILE_MODEL` / `CLAUDE_RANKING_MODEL` in `.env` (or GitHub secrets). The defaults in `newsletter/config.py` track current model aliases.

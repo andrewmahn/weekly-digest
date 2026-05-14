@@ -1,119 +1,164 @@
-"""Test the deals source with a stubbed Anthropic client.
+"""Test the deals source against a mocked Charlotte On The Cheap RSS feed.
 
-The deals source delegates to Claude's web_search tool, which we can't exercise
-without a real API call. These tests verify the contract: given a typed parsed
-response, do we surface the right DealPick list, and do we handle pause_turn and
-empty parses gracefully?
+We exercise the parse path: given a realistic feed payload, do we produce the right
+DealPick list? Network is mocked with respx — no real HTTP.
 """
 
 from __future__ import annotations
 
 from datetime import date
-from types import SimpleNamespace
-from typing import Any
+
+import httpx
+import respx
 
 from newsletter.config import Settings
-from newsletter.models import DealPick, DealType
-from newsletter.sources.deals import _DealsResponse, fetch_deals
+from newsletter.models import DealType
+from newsletter.sources.deals import FEED_URL, fetch_deals
 
 
-class _StubMessages:
-    """Mimic client.messages.parse with a configurable response sequence."""
-
-    def __init__(self, responses: list[Any]) -> None:
-        self._responses = list(responses)
-        self.call_count = 0
-
-    def parse(self, **kwargs: Any) -> Any:
-        self.call_count += 1
-        return self._responses.pop(0)
-
-
-class _StubClient:
-    def __init__(self, responses: list[Any]) -> None:
-        self.messages = _StubMessages(responses)
-
-
-def _ok_response(parsed: Any, stop_reason: str = "end_turn") -> SimpleNamespace:
-    return SimpleNamespace(
-        parsed_output=parsed,
-        stop_reason=stop_reason,
-        content=[],
-        usage=SimpleNamespace(input_tokens=1500, output_tokens=400),
+def _item(
+    *,
+    title: str,
+    link: str,
+    pub_date: str = "Wed, 13 May 2026 20:00:00 +0000",
+    description: str = "<p>Details about the event with venue address and timing.</p>",
+    categories: tuple[str, ...] = (),
+) -> str:
+    cats = "".join(f"<category><![CDATA[{c}]]></category>" for c in categories)
+    return (
+        "<item>"
+        f"<title>{title}</title>"
+        f"<link>{link}</link>"
+        f"<pubDate>{pub_date}</pubDate>"
+        f"{cats}"
+        f"<description><![CDATA[{description}]]></description>"
+        "</item>"
     )
 
 
-def _sample_deal_pick() -> DealPick:
-    return DealPick(
-        title="Half-price oysters",
-        description="Tuesday happy hour at this NoDa seafood spot — local oysters cut in half from 5 to 7pm.",
-        venue="The Stanley",
-        neighborhood="Elizabeth",
-        deal_type=DealType.HAPPY_HOUR,
-        when="Tuesdays 5–7pm",  # noqa: RUF001 — intentional en-dash for display
-        source_url="https://example.com/the-stanley-happy-hour",
+def _feed(items: list[str]) -> str:
+    body = "".join(items)
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<rss version="2.0"><channel>'
+        "<title>Charlotte On The Cheap</title>"
+        f"{body}"
+        "</channel></rss>"
     )
 
 
-def test_fetch_deals_returns_parsed_picks(settings: Settings) -> None:
-    deal = _sample_deal_pick()
-    client = _StubClient([_ok_response(_DealsResponse(deals=[deal]))])
-
-    picks = fetch_deals(
-        settings,
-        week_start=date(2026, 5, 17),
-        week_end=date(2026, 5, 23),
-        client=client,  # type: ignore[arg-type]
-    )
-
-    assert len(picks) == 1
-    assert picks[0].title == "Half-price oysters"
-    assert picks[0].deal_type == DealType.HAPPY_HOUR
-    assert client.messages.call_count == 1
-
-
-def test_fetch_deals_resumes_on_pause_turn(settings: Settings) -> None:
-    deal = _sample_deal_pick()
-    # First response pauses (server-side loop hit cap); second completes.
-    client = _StubClient(
+@respx.mock
+def test_fetch_deals_parses_feed(settings: Settings) -> None:
+    feed = _feed(
         [
-            _ok_response(None, stop_reason="pause_turn"),
-            _ok_response(_DealsResponse(deals=[deal]), stop_reason="end_turn"),
+            _item(
+                title="Half-price oyster happy hour at The Stanley",
+                link="https://charlotteonthecheap.com/stanley-oysters/",
+                categories=("Food and Drink",),
+                description=(
+                    "<p>The Stanley in Elizabeth runs half-price oysters every Tuesday "
+                    "from 5 to 7pm.</p>"
+                    '<p>The post <a href="https://charlotteonthecheap.com/stanley-oysters/">'
+                    "Half-price oysters</a> appeared first on "
+                    '<a href="https://charlotteonthecheap.com">Charlotte On The Cheap</a>.</p>'
+                ),
+            ),
+            _item(
+                title="Free outdoor movie at Romare Bearden Park",
+                link="https://charlotteonthecheap.com/movie-park/",
+                categories=("Free Events", "Kids"),
+                description="<p>Bring a blanket Friday at 8pm for The Princess Bride.</p>",
+            ),
         ]
     )
+    respx.get(FEED_URL).mock(return_value=httpx.Response(200, content=feed))
 
-    picks = fetch_deals(
-        settings,
-        week_start=date(2026, 5, 17),
-        week_end=date(2026, 5, 23),
-        client=client,  # type: ignore[arg-type]
+    picks = fetch_deals(settings, week_start=date(2026, 5, 17), week_end=date(2026, 5, 23))
+
+    assert len(picks) == 2
+    happy = picks[0]
+    assert happy.title.startswith("Half-price oyster")
+    assert happy.deal_type == DealType.HAPPY_HOUR
+    assert "appeared first on" not in happy.description
+    assert "half-price oysters" in happy.description.lower()
+
+    free = picks[1]
+    assert free.deal_type == DealType.FREE_EVENT
+
+
+@respx.mock
+def test_fetch_deals_skips_aggregator_roundups(settings: Settings) -> None:
+    feed = _feed(
+        [
+            _item(
+                title="Free and cheap things to do in Charlotte this week",
+                link="https://charlotteonthecheap.com/freethingstodo/",
+            ),
+            _item(
+                title="Game Night every Saturday at Confluence",
+                link="https://charlotteonthecheap.com/confluence-game-night/",
+            ),
+        ]
     )
+    respx.get(FEED_URL).mock(return_value=httpx.Response(200, content=feed))
+
+    picks = fetch_deals(settings, week_start=date(2026, 5, 17), week_end=date(2026, 5, 23))
 
     assert len(picks) == 1
-    assert client.messages.call_count == 2
+    assert "Confluence" in picks[0].title
 
 
-def test_fetch_deals_returns_empty_when_no_parsed_output(settings: Settings) -> None:
-    client = _StubClient([_ok_response(None)])
+@respx.mock
+def test_fetch_deals_drops_items_older_than_cutoff(settings: Settings) -> None:
+    feed = _feed(
+        [
+            _item(
+                title="Fresh post — Live music at Frank's Beer Shop",
+                link="https://charlotteonthecheap.com/franks/",
+                pub_date="Mon, 11 May 2026 12:00:00 +0000",
+            ),
+            _item(
+                title="Stale post from last year",
+                link="https://charlotteonthecheap.com/stale/",
+                pub_date="Fri, 01 Mar 2025 12:00:00 +0000",
+            ),
+        ]
+    )
+    respx.get(FEED_URL).mock(return_value=httpx.Response(200, content=feed))
+
+    picks = fetch_deals(settings, week_start=date(2026, 5, 17), week_end=date(2026, 5, 23))
+
+    assert len(picks) == 1
+    assert "Frank" in picks[0].title
+
+
+@respx.mock
+def test_fetch_deals_respects_max_picks(settings: Settings) -> None:
+    items = [
+        _item(
+            title=f"Pick number {i}",
+            link=f"https://charlotteonthecheap.com/pick-{i}/",
+        )
+        for i in range(15)
+    ]
+    respx.get(FEED_URL).mock(return_value=httpx.Response(200, content=_feed(items)))
 
     picks = fetch_deals(
         settings,
         week_start=date(2026, 5, 17),
         week_end=date(2026, 5, 23),
-        client=client,  # type: ignore[arg-type]
+        max_picks=5,
     )
 
-    assert picks == []
+    assert len(picks) == 5
 
 
-def test_fetch_deals_handles_empty_deals_list(settings: Settings) -> None:
-    client = _StubClient([_ok_response(_DealsResponse(deals=[]))])
-
-    picks = fetch_deals(
-        settings,
-        week_start=date(2026, 5, 17),
-        week_end=date(2026, 5, 23),
-        client=client,  # type: ignore[arg-type]
+@respx.mock
+def test_fetch_deals_returns_empty_when_channel_missing(settings: Settings) -> None:
+    respx.get(FEED_URL).mock(
+        return_value=httpx.Response(200, content='<?xml version="1.0"?><rss></rss>')
     )
+
+    picks = fetch_deals(settings, week_start=date(2026, 5, 17), week_end=date(2026, 5, 23))
 
     assert picks == []

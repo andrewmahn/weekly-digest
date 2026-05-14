@@ -1,6 +1,6 @@
 # weekly-digest
 
-A personalized weekly newsletter for Charlotte, NC — delivered every Sunday at 7am ET to a couple's inboxes. Pulls the week ahead from Google Calendar, the 7-day forecast from Open-Meteo, upcoming concerts and events from Ticketmaster and Songkick, and current happy hours and restaurant deals via Claude's web_search tool — then uses Claude Sonnet to rank recommendations against a calendar-history-derived preference profile, with a short "why this for you" reason per pick.
+A personalized weekly newsletter for Charlotte, NC — delivered every Sunday at 7am ET to a couple's inboxes. Pulls the week ahead from Google Calendar, the 7-day forecast from Open-Meteo, upcoming concerts and events from Ticketmaster and Songkick, and current happy hours, restaurant deals, and free local events from charlotteonthecheap.com's RSS feed — then uses Claude Sonnet to rank recommendations against a calendar-history-derived preference profile, with a short "why this for you" reason per pick.
 
 ![newsletter screenshot](docs/screenshots/newsletter.png)
 
@@ -12,7 +12,7 @@ A standing weekend-planning conversation, automated. Each Sunday morning before 
 
 The personalization layer is what makes it more than an RSS roll-up: a monthly background job scans the last six months of shared calendar events and writes a structured preference profile (music genres you actually attend, cuisines you actually eat, venues you actually go back to). The weekly job feeds that profile plus the next-week event candidates to Claude Sonnet, which ranks them and writes a single-sentence reason for each pick tied to a real signal from your history.
 
-A second weekly Claude call uses the server-side `web_search` tool to find current Charlotte happy hours and restaurant specials — there's no clean API for that data, so we delegate discovery to the model and have it return a structured list with source URLs for attribution.
+For the "happy hours & deals" section, we scrape charlotteonthecheap.com's RSS feed — a Charlotte-focused local-events blog that already curates the kind of content we want (free events, restaurant deals, happy hours). Pulling the feed directly avoids both a brittle multi-site scrape and a per-run Claude `web_search` bill.
 
 ## Architecture
 
@@ -27,7 +27,7 @@ GitHub Actions cron (Sun 11:07 UTC)
                        │              └─► Claude Sonnet 4.6 (weekly rank)
                        │
                        └─► Google Calendar, Open-Meteo, Ticketmaster, Songkick,
-                           Claude web_search (happy hours & deals)
+                           charlotteonthecheap.com RSS (happy hours & deals)
 
 GitHub Actions cron (1st of month 11:07 UTC)
         │

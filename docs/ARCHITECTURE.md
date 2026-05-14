@@ -21,7 +21,7 @@
 │            ├─ sources/weather.py      ─→  Open-Meteo (keyless)        │
 │            ├─ sources/ticketmaster.py ─→  Ticketmaster Discovery API  │
 │            ├─ sources/songkick.py     ─→  Songkick (optional)         │
-│            ├─ sources/deals.py        ─→  Anthropic API (web_search)  │
+│            ├─ sources/deals.py        ─→  charlotteonthecheap.com RSS │
 │            │                                                          │
 │            ├─ personalize.py          ─→  Anthropic API                │
 │            │   • build_profile (Haiku 4.5, monthly)                   │
@@ -56,16 +56,18 @@
 |---|---|---|
 | Profile build (monthly only) | Haiku 4.5 | ~$0.01 |
 | Weekly ranking | Sonnet 4.6 (effort low, thinking off) | ~$0.05–0.15 |
-| Weekly deals (web_search) | Sonnet 4.6 (effort low, thinking off) | ~$0.15–0.35 (incl. web_search fees) |
-| **Annual total** | | **~$15–25** |
+| Weekly deals (RSS scrape) | — | $0 |
+| **Annual total** | | **~$3–8** |
 
-### Deals via Claude web_search
+### Deals via charlotteonthecheap.com RSS
 
-The "happy hours & deals" section delegates discovery to Claude with Anthropic's server-side `web_search` tool (`web_search_20260209`, the version with dynamic filtering). Once a week the call hits the open web for current Charlotte happy hours, restaurant specials, and free/cheap events, and returns a typed `list[DealPick]` via `messages.parse()` — the same structured-output pattern as the ranking step.
+The "happy hours & deals" section scrapes [charlotteonthecheap.com](https://charlotteonthecheap.com/)'s WordPress RSS feed at `/feed/`. The blog curates exactly the content we want (Charlotte-area happy hours, restaurant specials, free events) and the feed exposes the 100 most-recent posts as XML — title, link, pub date, categories, and an HTML description. We filter to items published in the two weeks leading up to `week_start`, drop aggregator round-ups (`"Free and cheap things to do…"`, `"Best of…"`) so we don't double-count, classify by title/category into `HAPPY_HOUR` / `RESTAURANT_SPECIAL` / `FREE_EVENT` / `DISCOUNTED_EVENT`, and cap at 8 picks. No Claude call, no third-party API key.
 
-**Why this instead of an aggregator API?** There's no clean public API for "current Charlotte happy hours." Yelp Fusion has restaurant listings but rarely populates `special_hours`; Eventbrite's public search endpoint was deprecated in 2020; Groupon is partner-only. The realistic alternatives are scraping local-news RSS or a curated YAML list — both have maintenance debt and no portfolio value. Letting Claude search and curate is roughly the price of `$0.04/month` and produces fresher results than any static list.
+**Why this instead of Claude web_search?** An earlier version used Claude with the server-side `web_search` tool — flexible, but the dominant Anthropic line item at ~$0.15–0.35/run. charlotteonthecheap.com already does the human curation for us at zero marginal cost, and parsing a stable WordPress RSS feed with stdlib `ElementTree` is more reliable than asking an LLM to evaluate freshness across the open web. Trade-off: picks are limited to what one local blog publishes (still 5–10 per week on average), versus Claude pulling from anywhere.
 
-**Failure mode.** A non-empty result is not guaranteed — Charlotte may have a quiet week, or Claude may decide nothing on the web is current enough. The newsletter renders an empty deals section gracefully. The call is wrapped in `_safe()` in `main.py` so an Anthropic outage doesn't kill the whole run.
+**Why not HTML-scrape the homepage?** The RSS feed is the same content in a stable, machine-readable format. WordPress feeds rarely change shape; homepage markup changes whenever the site is restyled.
+
+**Failure mode.** If the feed is unreachable or returns no recent items, the newsletter renders an empty deals section gracefully. The call is wrapped in `_safe()` in `main.py` so a charlotteonthecheap.com outage doesn't kill the whole run.
 
 ### Privacy
 
@@ -99,7 +101,7 @@ Off-minute (`:07`) avoids the top-of-hour scheduler stampede where every cron jo
 |---|---|---|
 | Email delivery | Resend | Gmail SMTP (requires app passwords; less professional) |
 | Event source | Ticketmaster + Songkick | Eventbrite (public search API deprecated 2024), PredictHQ (paid) |
-| Deals & happy hours | Claude `web_search` once a week | Yelp Fusion (`special_hours` rarely populated, API gated), Reddit r/Charlotte (low signal — empirically tested), Groupon (deprecated for new apps), curated YAML list (maintenance burden, no freshness) |
+| Deals & happy hours | charlotteonthecheap.com RSS feed | Claude `web_search` (cost — was ~$0.15–0.35/run), Yelp Fusion (`special_hours` rarely populated, API gated), Reddit r/Charlotte (low signal — empirically tested), Groupon (deprecated for new apps), curated YAML list (maintenance burden, no freshness) |
 | Dependency manager | `uv` | Poetry (slower), pip-tools (more manual) |
 | Test mocking | `respx` for HTTP | `vcrpy` cassettes (planned for v1.1) |
 
